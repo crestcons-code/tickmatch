@@ -1238,6 +1238,8 @@ async function ingestFile(kind, file) {
     map: null, items: [], skipped: 0, rawBuf: null
   };
   const buf = await file.arrayBuffer();
+  if (buf.byteLength === 0)
+    throw new Error('This file is empty (0 bytes) — the download probably failed. Download the statement again, or pick an earlier copy.');
   const head = new Uint8Array(buf.slice(0, 8));
   const sig4 = Array.from(head.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('');
   try {
