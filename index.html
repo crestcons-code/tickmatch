@@ -389,20 +389,27 @@ table.data td.ck { width: 30px; text-align: center; }
 .print-only h1 { font-size: 19px; margin: 0 0 3px; }
 .print-only .pr-sub { color: #333; margin-bottom: 14px; font-size: 10.5px; }
 .print-only h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; }
-.print-only table { width: 100%; border-collapse: collapse; }
-.print-only th, .print-only td { padding: 3.5px 6px; border-bottom: 0.5pt solid #888; text-align: left; vertical-align: top; }
+.print-only table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.print-only th, .print-only td {
+  padding: 3.5px 6px; border-bottom: 0.5pt solid #888; text-align: left; vertical-align: top;
+  overflow-wrap: anywhere; word-break: break-word;
+}
 .print-only th { border-bottom: 1pt solid #000; font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; }
-.print-only .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.print-only .num { text-align: right; font-variant-numeric: tabular-nums; }
 .print-only tr.total td { font-weight: 700; border-top: 1pt solid #000; border-bottom: 2pt double #000; }
-.print-only .pr-sign { display: flex; gap: 48px; margin-top: 44px; }
+.print-only tr { break-inside: avoid; page-break-inside: avoid; }
+.print-only h2 { break-after: avoid; page-break-after: avoid; }
+.print-only .pr-sign { display: flex; gap: 48px; margin-top: 44px; break-inside: avoid; page-break-inside: avoid; }
 .print-only .pr-sign div { flex: 1; border-top: 0.5pt solid #000; padding-top: 6px; font-size: 10px; }
 .print-only .pr-note { color: #333; font-size: 10px; margin-top: 12px; }
 @media print {
-  @page { margin: 14mm; }
+  @page { size: A4 portrait; margin: 12mm; }
+  html, body { width: auto !important; height: auto !important; }
   body { background: #fff !important; color: #000 !important; }
+  .app { max-width: none !important; padding: 0 !important; }
   .topbar, .stepper, .kpis, .results-bar, .tabs, .table-card, .match-bar,
   .actions-row, .footer-note, .toast { display: none !important; }
-  .print-only { display: block !important; color: #000; font-size: 11px; line-height: 1.45; }
+  .print-only { display: block !important; color: #000; font-size: 10.5px; line-height: 1.45; }
 }
 </style>
 <div class="app">
@@ -1589,7 +1596,8 @@ function buildPrintReport() {
     return `<tr${cls ? ' class="' + cls + '"' : ''}><td>${label}</td><td class="num">${n}</td>
       <td class="num">${fmtMoney(tin)}</td><td class="num">${fmtMoney(tout)}</td><td class="num">${fmtMoney(sum(arr))}</td></tr>`;
   };
-  const listHead = '<thead><tr><th>Date</th><th>Description</th><th>Ref</th><th class="num">Money in (RM)</th><th class="num">Money out (RM)</th></tr></thead>';
+  const listCols = '<colgroup><col style="width:70px"><col><col style="width:88px"><col style="width:82px"><col style="width:82px"></colgroup>';
+  const listHead = listCols + '<thead><tr><th>Date</th><th>Description</th><th>Ref</th><th class="num">Money in (RM)</th><th class="num">Money out (RM)</th></tr></thead>';
   const listRows = (arr) => arr.length ? arr.map(i =>
     `<tr><td class="num" style="text-align:left">${fmtDate(i.date)}</td><td>${esc(i.desc)}</td><td>${esc(i.ref)}</td>
      <td class="num">${i.amount > 0 ? fmtMoney(i.amount) : ''}</td><td class="num">${i.amount < 0 ? fmtMoney(-i.amount) : ''}</td></tr>`).join('')
@@ -1599,7 +1607,8 @@ function buildPrintReport() {
     <div class="pr-sub">Period ${period} &nbsp;·&nbsp; Bank statement: ${esc(S.bank.name)} &nbsp;·&nbsp; General ledger: ${esc(S.gl.name)}<br>
       Prepared ${new Date().toLocaleString()} &nbsp;·&nbsp; Matching rule: exact amount, dates within ${getWindow()} days, description similarity as tie-breaker</div>
     <h2>Summary</h2>
-    <table><thead><tr><th></th><th class="num">Items</th><th class="num">Money in (RM)</th><th class="num">Money out (RM)</th><th class="num">Net (RM)</th></tr></thead><tbody>
+    <table><colgroup><col><col style="width:70px"><col style="width:95px"><col style="width:95px"><col style="width:95px"></colgroup>
+    <thead><tr><th></th><th class="num">Items</th><th class="num">Money in (RM)</th><th class="num">Money out (RM)</th><th class="num">Net (RM)</th></tr></thead><tbody>
       ${srow('Per bank statement', b.length, b)}
       ${srow('Per general ledger', g.length, g)}
       ${srow('Matched (appear in both)', S.matches.length + ' pairs', matchedBank)}
@@ -1607,7 +1616,7 @@ function buildPrintReport() {
       ${srow('In ledger only', ug.length, ug)}
     </tbody></table>
     <h2>Reconciliation of the difference</h2>
-    <table style="max-width:520px"><tbody>
+    <table style="max-width:520px"><colgroup><col><col style="width:110px"></colgroup><tbody>
       <tr><td>Net movement per bank statement</td><td class="num">${fmtMoney(sum(b))}</td></tr>
       <tr><td>Net movement per general ledger</td><td class="num">${fmtMoney(sum(g))}</td></tr>
       <tr class="total"><td>Difference to explain</td><td class="num">${fmtMoney(diff)}</td></tr>
