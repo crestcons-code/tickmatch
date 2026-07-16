@@ -1062,8 +1062,8 @@ function autoMap(kind, grid, headerRow) {
     if (stats[c].dateRate > bestRate) { bestRate = stats[c].dateRate; map.date = c; }
 
   // debit / credit by header
-  const debitRx = kind === 'bank' ? /debit|withdraw|keluar|payment|\bdr\b/i : /debit|\bdr\b/i;
-  const creditRx = kind === 'bank' ? /credit|deposit|masuk|\bcr\b/i : /credit|\bcr\b/i;
+  const debitRx = kind === 'bank' ? /debit|withdraw|keluar|cash[\s-]*out|money[\s-]*out|outflow|\bdr\b/i : /debit|\bdr\b/i;
+  const creditRx = kind === 'bank' ? /credit|deposit|masuk|cash[\s-]*in\b|money[\s-]*in\b|inflow|\bcr\b/i : /credit|\bcr\b/i;
   for (let c = 0; c < n; c++) {
     if (c === map.date || isBalance(c)) continue;
     if (map.debit < 0 && debitRx.test(h(c)) && !creditRx.test(h(c))) map.debit = snap(c, 'num');
@@ -1120,6 +1120,13 @@ function autoMap(kind, grid, headerRow) {
       if (![map.date, map.desc, map.debit, map.credit, map.amount].includes(rc)) { map.ref = rc; break; }
     }
   }
+  // second description column (e.g. Maybank CSV's Description 2 / Beneficiary Name)
+  map.desc2 = -1;
+  let bl2 = 5;
+  for (let c = 0; c < n; c++) {
+    if ([map.date, map.desc, map.ref, map.debit, map.credit, map.amount].includes(c) || isBalance(c)) continue;
+    if (stats[c].avgLen > bl2 && stats[c].dateRate < 0.3 && stats[c].numRate < 0.3) { bl2 = stats[c].avgLen; map.desc2 = c; }
+  }
   return map;
 }
 
@@ -1135,7 +1142,9 @@ function buildItems(fs) {
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const rawDate = map.date >= 0 ? r[map.date] : '';
-    const desc = map.desc >= 0 ? (r[map.desc] || '') : '';
+    let desc = map.desc >= 0 ? (r[map.desc] || '') : '';
+    const desc2 = map.desc2 >= 0 ? (r[map.desc2] || '') : '';
+    if (desc2 && desc2 !== desc) desc = (desc ? desc + ' ' : '') + desc2;
     const ref = map.ref >= 0 ? (r[map.ref] || '') : '';
     let amount = null;
     if (map.amountMode === 'dc') {
@@ -1420,6 +1429,7 @@ function renderMappingCard(kind) {
       <label class="fld">Header row<input type="number" data-field="headerRow" min="0" max="${fs.grid.length}" value="${fs.headerRow + 1}" title="Row number of the column headings (0 = no header row)"/></label>
       <label class="fld">Date${fieldSelect(fs, 'date', m.date, false)}</label>
       <label class="fld">Description${fieldSelect(fs, 'desc', m.desc, false)}</label>
+      <label class="fld">Description 2 (optional)${fieldSelect(fs, 'desc2', m.desc2, true)}</label>
       <label class="fld">Reference (optional)${fieldSelect(fs, 'ref', m.ref, true)}</label>
       <label class="fld">Amount layout<select data-field="amountMode">
         <option value="dc"${m.amountMode === 'dc' ? ' selected' : ''}>Two columns (debit &amp; credit)</option>
@@ -1475,6 +1485,7 @@ function previewTable(fs) {
   const roles = [];
   const m = fs.map;
   roles[m.date] = 'DATE'; roles[m.desc] = 'DESCRIPTION';
+  if (m.desc2 >= 0) roles[m.desc2] = 'DESCRIPTION 2';
   if (m.ref >= 0) roles[m.ref] = 'REF';
   if (m.amountMode === 'dc') {
     if (m.debit >= 0) roles[m.debit] = fs.kind === 'bank' ? 'MONEY OUT' : 'MONEY OUT (CR)';
