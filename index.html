@@ -170,6 +170,13 @@ h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }
+.resume-bar {
+  display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  border-radius: var(--radius); padding: 11px 16px; margin-bottom: 18px;
+  font-size: 13px;
+}
+.resume-bar.visible { display: flex; }
 .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 @media (max-width: 760px) { .upload-grid { grid-template-columns: 1fr; } }
 
@@ -431,6 +438,12 @@ table.data td.ck { width: 30px; text-align: center; }
 
   <!-- ============ STEP 1: UPLOAD ============ -->
   <section class="panel visible" id="panel1">
+    <div class="resume-bar" id="resumeBar">
+      <span id="resumeText"></span>
+      <span class="spacer"></span>
+      <button class="btn small" id="btnResumeDiscard">Discard</button>
+      <button class="btn small primary" id="btnResume">Resume</button>
+    </div>
     <div class="upload-grid">
       <div class="card dropzone" id="dzBank">
         <span class="eyebrow">Side A</span>
@@ -475,6 +488,8 @@ table.data td.ck { width: 30px; text-align: center; }
 
     <div class="actions-row">
       <button class="btn ghost" id="btnSample">Try with sample data</button>
+      <button class="btn ghost" id="btnLoadSession">Open saved session…</button>
+      <input type="file" id="sessionFile" accept=".json,.tickmatch" style="display:none" />
       <span class="hint">Tip: CSV and Excel files match most reliably. PDF works too — you'll get a preview to check the extraction.</span>
       <span class="spacer"></span>
       <button class="btn primary" id="btnToMapping" disabled>Continue → Confirm columns</button>
@@ -529,6 +544,9 @@ table.data td.ck { width: 30px; text-align: center; }
 
     <div class="actions-row">
       <button class="btn" id="btnBackMapping">← Back to columns</button>
+      <span class="spacer"></span>
+      <span class="hint" id="saveHint"></span>
+      <button class="btn" id="btnSaveSession">Save session to file</button>
     </div>
   </section>
 
@@ -1419,6 +1437,11 @@ function renderMappingCard(kind) {
   const fs = S[kind];
   const host = $(kind === 'bank' ? 'mapBank' : 'mapGL');
   if (!fs) { host.innerHTML = ''; return; }
+  if (!fs.grid || !fs.grid.length) {
+    host.innerHTML = `<div class="head"><h2>${kind === 'bank' ? 'Bank statement' : 'General ledger'}</h2><span class="fname">${esc(fs.name)}</span></div>
+      <div class="parse-note">Column settings aren't available for this restored session — the original file wasn't kept. Re-upload the file to change columns; your matches are safe.</div>`;
+    return;
+  }
   const m = fs.map;
   const title = kind === 'bank' ? 'Bank statement' : 'General ledger';
   const inLbl = kind === 'bank' ? 'Deposits / money in (credit)' : 'Debit (money in)';
@@ -1548,6 +1571,7 @@ function runMatching() {
   autoMatch(getWindow());
   goStep(3);
   renderResults();
+  saveSession();
 }
 function getWindow() {
   const v = parseInt($('dateWin').value, 10);
@@ -1725,6 +1749,7 @@ function bindMatchedEvents(host) {
     btn.addEventListener('click', () => {
       S.matches.splice(parseInt(btn.dataset.unmatch, 10), 1);
       renderResults();
+      saveSession();
       toast('Match removed — items returned to the unmatched lists.');
     });
   });
@@ -1875,6 +1900,79 @@ async function loadSample() {
   toast('Sample files loaded — a Maybank-style statement and an Autocount-style ledger.');
 }
 
+/* ---------------- session save & restore ---------------- */
+const LS_KEY = 'tickmatch-session-v1';
+
+function serializeSession(includeGrids) {
+  const pack = (fs) => ({
+    name: fs.name, fmt: fs.fmt, size: fs.size, headerRow: fs.headerRow, map: fs.map,
+    grid: includeGrids ? fs.grid : null,
+    items: includeGrids ? null : fs.items
+  });
+  return { v: 1, savedAt: Date.now(), dateWin: getWindow(),
+           bank: pack(S.bank), gl: pack(S.gl), matches: S.matches };
+}
+function saveSession() {
+  if (!S.bank || !S.gl || !S.bank.items.length || !S.gl.items.length) return;
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(serializeSession(true)));
+  } catch (e) {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(serializeSession(false))); } catch (e2) { /* storage full/blocked */ }
+  }
+  const h = $('saveHint');
+  if (h) h.textContent = 'Progress saved on this device · ' + new Date().toLocaleTimeString();
+}
+function restoreSession(data) {
+  const unpack = (p, kind) => {
+    const grid = p.grid || [];
+    const fs = { kind, name: p.name, fmt: p.fmt, size: p.size || 0,
+      sheets: [{ name: 'restored', grid }], sheetIdx: 0, grid,
+      headerRow: p.headerRow, map: p.map, items: [], skipped: 0 };
+    if (grid.length) buildItems(fs);
+    else fs.items = p.items || [];
+    return fs;
+  };
+  S.bank = unpack(data.bank, 'bank');
+  S.gl = unpack(data.gl, 'gl');
+  S.matches = data.matches || [];
+  S.sel.bank.clear(); S.sel.gl.clear();
+  $('dateWin').value = data.dateWin ?? 7;
+  refreshUploadUI();
+  goStep(3);
+  renderResults();
+}
+function checkSavedSession() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(LS_KEY)); } catch (e) { /* corrupt */ }
+  if (!data || !data.bank || !data.gl) return;
+  const when = new Date(data.savedAt).toLocaleString();
+  $('resumeText').innerHTML = `💾 Saved work from <b>${esc(when)}</b> — ${esc(data.bank.name)} ↔ ${esc(data.gl.name)}, ${(data.matches || []).length} matches. Saved on this device only.`;
+  $('resumeBar').classList.add('visible');
+  $('btnResume').onclick = () => { $('resumeBar').classList.remove('visible'); restoreSession(data); };
+  $('btnResumeDiscard').onclick = () => { localStorage.removeItem(LS_KEY); $('resumeBar').classList.remove('visible'); };
+}
+function downloadSessionFile() {
+  const blob = new Blob([JSON.stringify(serializeSession(true))], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  a.download = 'tickmatch-' + d.toISOString().slice(0, 10) + '.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast('Session file downloaded — open it later with "Open saved session".');
+}
+async function loadSessionFile(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !data.bank || !data.gl) throw new Error('not a TickMatch session');
+    restoreSession(data);
+    saveSession();
+    toast('Session restored.');
+  } catch (e) {
+    toast('Could not open this file — it is not a TickMatch session file.');
+  }
+}
+
 /* ---------------- wiring ---------------- */
 function init() {
   bindUpload('bank', 'zoneBank', 'fileBank', 'chipBank', 'clearBank');
@@ -1895,6 +1993,7 @@ function init() {
   $('btnRematch').addEventListener('click', () => {
     autoMatch(getWindow());
     renderResults();
+    saveSession();
     toast('Auto-match re-run. Manual matches were kept.');
   });
   $('tblFilter').addEventListener('input', (e) => { S.filter = e.target.value.trim(); renderTable(); });
@@ -1904,6 +2003,7 @@ function init() {
     S.matches.push({ bank: [...S.sel.bank], gl: [...S.sel.gl], auto: false });
     S.sel.bank.clear(); S.sel.gl.clear();
     renderResults();
+    saveSession();
     toast('Matched manually.');
   });
   $('btnClearSel').addEventListener('click', () => {
@@ -1916,9 +2016,18 @@ function init() {
     S.bank = null; S.gl = null; S.matches = [];
     S.sel.bank.clear(); S.sel.gl.clear(); S.filter = '';
     $('tblFilter').value = '';
+    try { localStorage.removeItem(LS_KEY); } catch (e) {}
+    $('saveHint').textContent = '';
     refreshUploadUI();
     goStep(1);
   });
+  $('btnSaveSession').addEventListener('click', downloadSessionFile);
+  $('btnLoadSession').addEventListener('click', () => $('sessionFile').click());
+  $('sessionFile').addEventListener('change', () => {
+    if ($('sessionFile').files.length) loadSessionFile($('sessionFile').files[0]);
+    $('sessionFile').value = '';
+  });
+  checkSavedSession();
   document.querySelectorAll('.step.done').forEach(() => {});
   $('step1').addEventListener('click', () => { if ($('step1').classList.contains('done')) goStep(1); });
   $('step2').addEventListener('click', () => { if ($('step2').classList.contains('done')) { renderMappingCard('bank'); renderMappingCard('gl'); goStep(2); } });
