@@ -335,6 +335,11 @@ table.data td.date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 table.data td.desc { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.data td.desc:hover { white-space: normal; }
 table.data tbody tr:hover { background: var(--surface2); }
+table.data tfoot td {
+  position: sticky; bottom: 0; background: var(--surface2);
+  font-weight: 600; border-top: 1px solid var(--line-strong); border-bottom: none;
+  font-variant-numeric: tabular-nums;
+}
 table.data td.ck { width: 30px; text-align: center; }
 .empty-msg { padding: 34px; text-align: center; color: var(--ink2); font-size: 13.5px; }
 
@@ -1525,6 +1530,15 @@ function renderResults() {
   renderMatchBar();
 }
 function sum(items) { return items.reduce((s, i) => s + i.amount, 0); }
+function inOut(items) {
+  const tin = items.filter(i => i.amount > 0).reduce((s, i) => s + i.amount, 0);
+  const tout = -items.filter(i => i.amount < 0).reduce((s, i) => s + i.amount, 0);
+  return { tin, tout };
+}
+function inOutSubs(items) {
+  const { tin, tout } = inOut(items);
+  return `<span class="sub">in ${fmtMoney(tin)}</span><span class="sub">out ${fmtMoney(tout)}</span>`;
+}
 function renderKPIs() {
   const b = S.bank.items, g = S.gl.items;
   const ub = unmatchedItems('bank'), ug = unmatchedItems('gl');
@@ -1532,11 +1546,11 @@ function renderKPIs() {
   const zero = Math.abs(diff) < 0.005;
   const pct = b.length ? Math.round((b.length - ub.length) / b.length * 100) : 0;
   $('kpis').innerHTML = `
-    <div class="kpi"><span class="lbl">Bank transactions</span><span class="val">${b.length}</span><span class="sub">net ${fmtMoney(sum(b), true)}</span></div>
-    <div class="kpi"><span class="lbl">Ledger entries</span><span class="val">${g.length}</span><span class="sub">net ${fmtMoney(sum(g), true)}</span></div>
-    <div class="kpi"><span class="lbl">Matched</span><span class="val">${S.matches.length}</span><span class="sub">${pct}% of bank items</span></div>
-    <div class="kpi"><span class="lbl">Unmatched — bank</span><span class="val">${ub.length}</span><span class="sub">${fmtMoney(sum(ub), true)}</span></div>
-    <div class="kpi"><span class="lbl">Unmatched — ledger</span><span class="val">${ug.length}</span><span class="sub">${fmtMoney(sum(ug), true)}</span></div>
+    <div class="kpi"><span class="lbl">Bank transactions</span><span class="val">${b.length}</span>${inOutSubs(b)}</div>
+    <div class="kpi"><span class="lbl">Ledger entries</span><span class="val">${g.length}</span>${inOutSubs(g)}</div>
+    <div class="kpi"><span class="lbl">Matched</span><span class="val">${S.matches.length}</span><span class="sub">${pct}% of bank items</span><span class="sub">net ${fmtMoney(sum(b.filter(i => !ub.includes(i))), true)}</span></div>
+    <div class="kpi"><span class="lbl">Unmatched — bank</span><span class="val">${ub.length}</span>${inOutSubs(ub)}</div>
+    <div class="kpi"><span class="lbl">Unmatched — ledger</span><span class="val">${ug.length}</span>${inOutSubs(ug)}</div>
     <div class="kpi ${zero ? 'diff-zero' : 'diff-nonzero'}"><span class="lbl">Difference</span><span class="val">${zero ? '0.00' : fmtMoney(diff)}</span><span class="sub">${zero ? 'fully reconciled ✓' : 'unmatched bank − ledger'}</span></div>`;
   $('printHeader').innerHTML = `<h2>Bank reconciliation summary</h2>
     <p>Bank: ${esc(S.bank.name)} — Ledger: ${esc(S.gl.name)} — generated ${new Date().toLocaleString()}.<br>
@@ -1578,7 +1592,13 @@ function renderTable() {
       <td class="num">${it.amount > 0 ? fmtMoney(it.amount) : ''}</td>
       <td class="num">${it.amount < 0 ? fmtMoney(-it.amount) : ''}</td></tr>`;
   }
-  host.innerHTML = html + '</tbody></table>';
+  const { tin, tout } = inOut(items);
+  html += `</tbody><tfoot><tr>
+    <td class="ck"></td><td></td>
+    <td>Total — ${items.length} item${items.length === 1 ? '' : 's'}${S.filter ? ' (filtered)' : ''}</td><td></td>
+    <td class="num">${fmtMoney(tin)}</td>
+    <td class="num">${fmtMoney(tout)}</td></tr></tfoot>`;
+  host.innerHTML = html + '</table>';
   host.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', () => {
       const set = S.sel[cb.dataset.kind];
@@ -1616,7 +1636,14 @@ function matchedTable() {
       <td class="num">${fmtMoney(amt)}</td><td>${ddChip}</td><td>${type}</td>
       <td><button class="btn small ghost" data-unmatch="${r.idx}">Unmatch</button></td></tr>`;
   }
-  return html + '</tbody></table>';
+  const amts = rows.map(r => sum(r.bs));
+  const tin = amts.filter(a => a > 0).reduce((s, a) => s + a, 0);
+  const tout = -amts.filter(a => a < 0).reduce((s, a) => s + a, 0);
+  html += `</tbody><tfoot><tr>
+    <td></td><td>Total — ${rows.length} pair${rows.length === 1 ? '' : 's'}${S.filter ? ' (filtered)' : ''}</td>
+    <td></td><td class="num">money in ${fmtMoney(tin)}</td>
+    <td class="num">out ${fmtMoney(tout)}</td><td></td><td></td><td></td></tr></tfoot>`;
+  return html + '</table>';
 }
 function bindMatchedEvents(host) {
   host.querySelectorAll('[data-unmatch]').forEach(btn => {
