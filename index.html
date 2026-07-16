@@ -1955,8 +1955,8 @@ function downloadSessionFile() {
   const blob = new Blob([JSON.stringify(serializeSession(true))], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  const d = new Date();
-  a.download = 'tickmatch-' + d.toISOString().slice(0, 10) + '.json';
+  const base = (S.bank.name || 'session').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '').trim().slice(0, 40) || 'session';
+  a.download = 'tickmatch-' + base + '-' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   toast('Session file downloaded — open it later with "Open saved session".');
