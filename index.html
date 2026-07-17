@@ -1270,6 +1270,81 @@ function autoMatch(windowDays) {
     usedB.add(p.b.id); usedG.add(p.g.id);
     S.matches.push({ bank: [p.b.id], gl: [p.g.id], auto: true, dd: p.dd, sim: p.sim });
   }
+  groupMatch(windowDays);
+}
+
+/* Split transactions: one item on one side = several same-date items on the
+   other side that sum to exactly the same amount (e.g. one bank deposit of
+   RM1,000 recorded as 5 receipts of RM200 in the ledger). */
+function subsetSum(items, target) {
+  const groups = new Map();
+  for (const it of items) {
+    const v = Math.abs(it.cents);
+    if (!groups.has(v)) groups.set(v, []);
+    groups.get(v).push(it);
+  }
+  const vals = [...groups.keys()].sort((a, b) => b - a);
+  const suffix = [];
+  let acc = 0;
+  for (let i = vals.length - 1; i >= 0; i--) { acc += vals[i] * groups.get(vals[i]).length; suffix[i] = acc; }
+  let nodes = 0;
+  const LIMIT = 20000, MAXITEMS = 10;
+  const chosen = [];
+  function dfs(i, rem, cnt) {
+    if (rem === 0) return cnt >= 2;
+    if (i >= vals.length || rem < 0 || cnt >= MAXITEMS || suffix[i] < rem) return false;
+    if (++nodes > LIMIT) return false;
+    const v = vals[i];
+    const maxT = Math.min(groups.get(v).length, Math.floor(rem / v), MAXITEMS - cnt);
+    for (let t = maxT; t >= 0; t--) {
+      chosen.push([i, t]);
+      if (dfs(i + 1, rem - t * v, cnt + t)) return true;
+      chosen.pop();
+    }
+    return false;
+  }
+  if (!dfs(0, target, 0)) return null;
+  const out = [];
+  for (const [i, t] of chosen) for (let k = 0; k < t; k++) out.push(groups.get(vals[i])[k]);
+  return out;
+}
+function groupMatch(windowDays) {
+  const matchedSet = matchedIdSet();
+  for (const [tk, pk] of [['bank', 'gl'], ['gl', 'bank']]) {
+    const pool = S[pk].items.filter(i => !matchedSet.has(i.id));
+    const byDate = new Map();
+    for (const p of pool) {
+      const key = p.date + '|' + (p.cents > 0 ? '+' : '-');
+      if (!byDate.has(key)) byDate.set(key, []);
+      byDate.get(key).push(p);
+    }
+    const targets = S[tk].items.filter(i => !matchedSet.has(i.id))
+      .sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents));
+    for (const t of targets) {
+      if (matchedSet.has(t.id)) continue;
+      const sign = t.cents > 0 ? '+' : '-';
+      let best = null;
+      for (const [key, arr0] of byDate) {
+        const [dstr, s] = key.split('|');
+        if (s !== sign) continue;
+        const dd = Math.abs(t.date - (+dstr)) / DAY;
+        if (dd > windowDays || (best && dd >= best.dd)) continue;
+        const arr = arr0.filter(p => !matchedSet.has(p.id) && Math.abs(p.cents) < Math.abs(t.cents));
+        if (arr.length < 2) continue;
+        const combo = subsetSum(arr, Math.abs(t.cents));
+        if (combo) best = { combo, dd };
+      }
+      if (best) {
+        S.matches.push({
+          bank: tk === 'bank' ? [t.id] : best.combo.map(i => i.id),
+          gl: tk === 'gl' ? [t.id] : best.combo.map(i => i.id),
+          auto: true, split: true, dd: best.dd, sim: 0
+        });
+        matchedSet.add(t.id);
+        best.combo.forEach(i => matchedSet.add(i.id));
+      }
+    }
+  }
 }
 function matchedIdSet() {
   const set = new Set();
@@ -1726,9 +1801,9 @@ function matchedTable() {
     const dd = r.m.dd != null ? Math.round(r.m.dd) : Math.round(Math.abs(Math.min(...r.bs.map(i => i.date)) - Math.min(...r.gs.map(i => i.date))) / DAY);
     const ddChip = dd === 0 ? '<span class="chip good">same day</span>' :
       `<span class="chip ${dd <= 3 ? 'good' : 'warn'}">${dd}d apart</span>`;
-    const type = r.m.auto
-      ? (r.m.sim > 0.45 ? '<span class="chip good">auto · strong</span>' : '<span class="chip info">auto</span>')
-      : '<span class="chip manual">manual</span>';
+    const type = !r.m.auto ? '<span class="chip manual">manual</span>'
+      : r.m.split ? `<span class="chip info">auto · split ${r.bs.length}↔${r.gs.length}</span>`
+      : (r.m.sim > 0.45 ? '<span class="chip good">auto · strong</span>' : '<span class="chip info">auto</span>');
     html += `<tr>
       <td class="date">${joinD(r.bs)}</td><td class="desc" title="${esc(joinT(r.bs))}">${esc(joinT(r.bs))}</td>
       <td class="date">${joinD(r.gs)}</td><td class="desc" title="${esc(joinT(r.gs))}">${esc(joinT(r.gs))}</td>
@@ -1816,7 +1891,7 @@ function exportCSV() {
     const bs = m.bank.map(id => itemById('bank', id));
     const gs = m.gl.map(id => itemById('gl', id));
     L.push([
-      m.auto ? 'Auto' : 'Manual',
+      m.auto ? (m.split ? 'Auto (split)' : 'Auto') : 'Manual',
       [...new Set(bs.map(i => fmtDate(i.date)))].join(' / '),
       bs.map(i => i.desc).join(' + '),
       bs.map(i => i.ref).filter(Boolean).join(' / '),
