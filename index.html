@@ -521,7 +521,7 @@ table.data td.ck { width: 30px; text-align: center; }
         <button class="btn small" id="btnRematch">Re-run auto-match</button>
       </div>
       <span class="grow"></span>
-      <input type="search" class="filter" id="tblFilter" placeholder="Filter description, ref or amount…" />
+      <input type="search" class="filter" id="tblFilter" placeholder="Filter… or type: split / manual / auto" />
       <button class="btn" id="btnExport">Download report (CSV)</button>
       <button class="btn" id="btnPrint">Print summary</button>
     </div>
@@ -1323,25 +1323,20 @@ function groupMatch(windowDays) {
     for (const t of targets) {
       if (matchedSet.has(t.id)) continue;
       const sign = t.cents > 0 ? '+' : '-';
-      let best = null;
-      for (const [key, arr0] of byDate) {
-        const [dstr, s] = key.split('|');
-        if (s !== sign) continue;
-        const dd = Math.abs(t.date - (+dstr)) / DAY;
-        if (dd > windowDays || (best && dd >= best.dd)) continue;
-        const arr = arr0.filter(p => !matchedSet.has(p.id) && Math.abs(p.cents) < Math.abs(t.cents));
-        if (arr.length < 2) continue;
-        const combo = subsetSum(arr, Math.abs(t.cents));
-        if (combo) best = { combo, dd };
-      }
-      if (best) {
+      // strictly same date on both sides — a split is one banking event
+      const arr0 = byDate.get(t.date + '|' + sign);
+      if (!arr0) continue;
+      const arr = arr0.filter(p => !matchedSet.has(p.id) && Math.abs(p.cents) < Math.abs(t.cents));
+      if (arr.length < 2) continue;
+      const combo = subsetSum(arr, Math.abs(t.cents));
+      if (combo) {
         S.matches.push({
-          bank: tk === 'bank' ? [t.id] : best.combo.map(i => i.id),
-          gl: tk === 'gl' ? [t.id] : best.combo.map(i => i.id),
-          auto: true, split: true, dd: best.dd, sim: 0
+          bank: tk === 'bank' ? [t.id] : combo.map(i => i.id),
+          gl: tk === 'gl' ? [t.id] : combo.map(i => i.id),
+          auto: true, split: true, dd: 0, sim: 0
         });
         matchedSet.add(t.id);
-        best.combo.forEach(i => matchedSet.add(i.id));
+        combo.forEach(i => matchedSet.add(i.id));
       }
     }
   }
@@ -1788,8 +1783,14 @@ function matchedTable() {
     const bs = m.bank.map(id => itemById('bank', id));
     const gs = m.gl.map(id => itemById('gl', id));
     return { m, idx, bs, gs, date: Math.min(...bs.map(i => i.date)) };
-  }).filter(r => !S.filter || r.bs.some(passesFilter) || r.gs.some(passesFilter))
-    .sort((a, b) => a.date - b.date);
+  }).filter(r => {
+    if (!S.filter) return true;
+    const f = S.filter.toLowerCase();
+    if (f === 'split') return !!r.m.split;
+    if (f === 'manual') return !r.m.auto;
+    if (f === 'auto') return r.m.auto;
+    return r.bs.some(passesFilter) || r.gs.some(passesFilter);
+  }).sort((a, b) => a.date - b.date);
   let html = `<table class="data"><thead><tr>
     <th>Bank date</th><th>Bank description</th>
     <th>Ledger date</th><th>Ledger description</th>
