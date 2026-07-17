@@ -387,6 +387,25 @@ table.data td.ck { width: 30px; text-align: center; }
 
 .footer-note { margin-top: 34px; font-size: 12px; color: var(--ink3); text-align: center; }
 
+/* ---------- B/F dialog ---------- */
+dialog#bfDialog {
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 22px; max-width: 600px; width: calc(100vw - 48px);
+}
+dialog#bfDialog::backdrop { background: rgba(10, 14, 11, .4); }
+dialog#bfDialog h2 { font-size: 16px; }
+dialog#bfDialog .hint { display: block; margin-top: 4px; }
+.bf-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 14px; }
+.bf-wide { grid-column: 1 / -1; }
+.bf-err { color: var(--bad); font-size: 12.5px; min-height: 17px; margin-top: 6px; }
+.bf-list-item {
+  display: flex; gap: 10px; align-items: center; font-size: 12.5px;
+  padding: 7px 0; border-top: 1px solid var(--line);
+}
+.bf-list-item .amt { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 560px) { .bf-form { grid-template-columns: 1fr; } }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -489,7 +508,8 @@ table.data td.ck { width: 30px; text-align: center; }
     <div class="actions-row">
       <button class="btn ghost" id="btnSample">Try with sample data</button>
       <button class="btn ghost" id="btnLoadSession">Open saved session…</button>
-      <button class="btn ghost" id="btnCarryFwd" title="Bring last month's unmatched items in as matching candidates">Carry forward last month…</button>
+      <button class="btn ghost" id="btnCarryFwd" title="Bring last month's unmatched items in from a saved session file">Carry forward last month…</button>
+      <button class="btn ghost" id="btnAddBfUpload" title="Type in outstanding items from your previous reconciliation">Add outstanding items…</button>
       <input type="file" id="sessionFile" accept=".json,.tickmatch" style="display:none" />
       <input type="file" id="bfFile" accept=".json,.tickmatch" style="display:none" />
       <span class="hint">Tip: CSV and Excel files match most reliably. PDF works too — you'll get a preview to check the extraction.</span>
@@ -525,6 +545,7 @@ table.data td.ck { width: 30px; text-align: center; }
       </div>
       <span class="grow"></span>
       <input type="search" class="filter" id="tblFilter" placeholder="Filter… or type: split / manual / auto" />
+      <button class="btn" id="btnAddBfResults" title="Type in an outstanding item from last month's reconciliation">Add B/F item</button>
       <button class="btn" id="btnExport">Download report (CSV)</button>
       <button class="btn" id="btnPrint">Print summary</button>
     </div>
@@ -559,6 +580,29 @@ table.data td.ck { width: 30px; text-align: center; }
     Always review before relying on the result.
   </div>
 </div>
+<dialog id="bfDialog">
+  <h2>Outstanding items brought forward</h2>
+  <p class="hint">Items from your previous reconciliation that had not cleared the bank yet — unpresented payment vouchers, deposits in transit. They join the matching marked “B/F ·” and are not limited by the date window.</p>
+  <div class="bf-form">
+    <label class="fld">Which side is it recorded on?<select id="bfSide">
+      <option value="gl" selected>Ledger (GL) — e.g. BV/PV issued last month</option>
+      <option value="bank">Bank statement</option></select></label>
+    <label class="fld">Original date<input type="date" id="bfDate" /></label>
+    <label class="fld">Direction<select id="bfDir">
+      <option value="out" selected>Money out (payment)</option>
+      <option value="in">Money in (receipt)</option></select></label>
+    <label class="fld">Amount (RM)<input type="number" id="bfAmt" min="0.01" step="0.01" placeholder="3500.00" /></label>
+    <label class="fld bf-wide">Description<input type="text" id="bfDesc" placeholder="e.g. Payment - Ubat Enterprise" /></label>
+    <label class="fld">Ref (optional)<input type="text" id="bfRef" placeholder="BV / PV / cheque no." /></label>
+  </div>
+  <div class="bf-err" id="bfErr"></div>
+  <div class="actions-row">
+    <button class="btn primary" id="bfAdd">Add item</button>
+    <span class="spacer"></span>
+    <button class="btn" id="bfClose">Done</button>
+  </div>
+  <div id="bfList"></div>
+</dialog>
 <div class="toast" id="toast" role="status"></div>
 <script>
 /**
@@ -1998,8 +2042,8 @@ function extractOutstanding(data) {
       items = tmp.items;
     } else items = p.items || [];
     if (data.bf && data.bf[kind]) items = items.concat(data.bf[kind]);   // chains across months
-    out[kind] = items.filter(i => !matched.has(i.id)).map((i, n) => ({
-      id: kind + '-bf-' + n, date: i.date, ref: i.ref || '',
+    out[kind] = items.filter(i => !matched.has(i.id)).map((i) => ({
+      id: kind + '-bf-' + Math.random().toString(36).slice(2, 10), date: i.date, ref: i.ref || '',
       amount: i.amount, cents: i.cents, bf: true,
       desc: /^B\/F · /.test(i.desc || '') ? i.desc : 'B/F · ' + (i.desc || '')
     }));
@@ -2010,17 +2054,63 @@ async function loadCarryForward(file) {
   try {
     const data = JSON.parse(await file.text());
     if (!data || !data.bank || !data.gl) throw new Error('bad file');
-    S.bf = extractOutstanding(data);
-    if (S.bank) buildItems(S.bank);
-    if (S.gl) buildItems(S.gl);
-    refreshUploadUI();
-    $('bfNote').textContent = `↩ Carried forward from ${data.bank.name || 'last session'}: ` +
-      `${S.bf.bank.length} outstanding bank item(s) and ${S.bf.gl.length} outstanding ledger item(s). ` +
-      `They are marked "B/F ·" and can match this month's transactions regardless of the date window.`;
-    toast('Outstanding items carried forward.');
+    const ex = extractOutstanding(data);
+    S.bf.bank = S.bf.bank.concat(ex.bank);
+    S.bf.gl = S.bf.gl.concat(ex.gl);
+    bfRefresh();
+    toast(`Carried forward ${ex.bank.length + ex.gl.length} outstanding item(s) from ${data.bank.name || 'last session'}.`);
   } catch (e) {
     toast('Could not read that file — choose the TickMatch session file you saved last month.');
   }
+}
+
+/* B/F housekeeping: rebuild items, refresh notes/lists/results, persist */
+function bfRefresh() {
+  if (S.bank) buildItems(S.bank);
+  if (S.gl) buildItems(S.gl);
+  const n = S.bf.bank.length + S.bf.gl.length;
+  $('bfNote').textContent = n
+    ? `↩ ${S.bf.gl.length} outstanding ledger item(s) and ${S.bf.bank.length} outstanding bank item(s) brought forward — marked “B/F ·”, no date-window limit.`
+    : '';
+  renderBfList();
+  refreshUploadUI();
+  if ($('panel3').classList.contains('visible') && S.bank && S.gl) renderResults();
+  saveSession();
+}
+function renderBfList() {
+  const host = $('bfList');
+  const rows = [];
+  for (const kind of ['gl', 'bank']) for (const i of S.bf[kind]) rows.push({ kind, i });
+  host.innerHTML = rows.map(r =>
+    `<div class="bf-list-item"><span class="chip ${r.kind === 'gl' ? 'info' : 'warn'}">${r.kind === 'gl' ? 'Ledger' : 'Bank'}</span>
+     <span>${fmtDate(r.i.date)} · ${esc(r.i.desc.replace(/^B\/F · /, ''))}${r.i.ref ? ' [' + esc(r.i.ref) + ']' : ''}</span>
+     <span class="amt">${fmtMoney(r.i.amount)}</span>
+     <button class="btn small ghost" data-bfdel="${r.i.id}" data-bfkind="${r.kind}" aria-label="Remove">✕</button></div>`).join('');
+  host.querySelectorAll('[data-bfdel]').forEach(b => b.addEventListener('click', () => {
+    const kind = b.dataset.bfkind, id = b.dataset.bfdel;
+    if (S.matches.some(m => m[kind].includes(id))) { toast('This item is matched — unmatch it first, then remove it.'); return; }
+    S.bf[kind] = S.bf[kind].filter(x => x.id !== id);
+    bfRefresh();
+  }));
+}
+function addBfItem() {
+  const side = $('bfSide').value, dateStr = $('bfDate').value, dir = $('bfDir').value;
+  const amt = parseFloat($('bfAmt').value), desc = $('bfDesc').value.trim(), ref = $('bfRef').value.trim();
+  const err = $('bfErr');
+  if (!dateStr) { err.textContent = 'Enter the item’s original date (per last month’s books).'; return; }
+  if (!desc) { err.textContent = 'Enter a description.'; return; }
+  if (!(amt > 0)) { err.textContent = 'Enter an amount greater than zero.'; return; }
+  err.textContent = '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const amount = dir === 'in' ? amt : -amt;
+  S.bf[side].push({
+    id: side + '-bf-' + Math.random().toString(36).slice(2, 10),
+    date: Date.UTC(y, m - 1, d), desc: 'B/F · ' + desc, ref,
+    amount, cents: Math.round(amount * 100), bf: true
+  });
+  $('bfDesc').value = ''; $('bfAmt').value = ''; $('bfRef').value = '';
+  bfRefresh();
+  toast('Outstanding item added — it will appear in the unmatched list until it finds its match.');
 }
 
 /* ---------------- session save & restore ---------------- */
@@ -2160,6 +2250,11 @@ function init() {
     if ($('bfFile').files.length) loadCarryForward($('bfFile').files[0]);
     $('bfFile').value = '';
   });
+  const openBfDialog = () => { renderBfList(); $('bfErr').textContent = ''; $('bfDialog').showModal(); };
+  $('btnAddBfUpload').addEventListener('click', openBfDialog);
+  $('btnAddBfResults').addEventListener('click', openBfDialog);
+  $('bfAdd').addEventListener('click', (e) => { e.preventDefault(); addBfItem(); });
+  $('bfClose').addEventListener('click', (e) => { e.preventDefault(); $('bfDialog').close(); });
   checkSavedSession();
   document.querySelectorAll('.step.done').forEach(() => {});
   $('step1').addEventListener('click', () => { if ($('step1').classList.contains('done')) goStep(1); });
