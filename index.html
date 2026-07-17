@@ -489,11 +489,14 @@ table.data td.ck { width: 30px; text-align: center; }
     <div class="actions-row">
       <button class="btn ghost" id="btnSample">Try with sample data</button>
       <button class="btn ghost" id="btnLoadSession">Open saved session…</button>
+      <button class="btn ghost" id="btnCarryFwd" title="Bring last month's unmatched items in as matching candidates">Carry forward last month…</button>
       <input type="file" id="sessionFile" accept=".json,.tickmatch" style="display:none" />
+      <input type="file" id="bfFile" accept=".json,.tickmatch" style="display:none" />
       <span class="hint">Tip: CSV and Excel files match most reliably. PDF works too — you'll get a preview to check the extraction.</span>
       <span class="spacer"></span>
       <button class="btn primary" id="btnToMapping" disabled>Continue → Confirm columns</button>
     </div>
+    <div class="hint" id="bfNote" style="margin-top:10px"></div>
   </section>
 
   <!-- ============ STEP 2: MAPPING ============ -->
@@ -617,6 +620,7 @@ const S = {
   bank: null,
   gl: null,
   matches: [],            // {bank:[ids], gl:[ids], auto:bool, dd:number, score:number}
+  bf: { bank: [], gl: [] }, // outstanding items carried forward from last month's session
   sel: { bank: new Set(), gl: new Set() },
   tab: 'ub',
   filter: ''
@@ -1222,6 +1226,8 @@ function buildItems(fs) {
     });
   }
   fs.items = items;
+  // carried-forward outstanding items join the live file's items (only for the active files)
+  if (S[fs.kind] === fs && S.bf[fs.kind].length) fs.items = items.concat(S.bf[fs.kind]);
   fs.skipped = skipped;
   return items;
 }
@@ -1257,10 +1263,11 @@ function autoMatch(windowDays) {
     const cands = glByAmt.get(b.cents);
     if (!cands) continue;
     for (const g of cands) {
+      const bf = b.bf || g.bf;   // outstanding items are expected to clear late — no date window
       const dd = Math.abs(b.date - g.date) / DAY;
-      if (dd > windowDays) continue;
+      if (bf ? dd > 92 : dd > windowDays) continue;
       const sim = descSim(b.desc + ' ' + b.ref, g.desc + ' ' + g.ref);
-      pairs.push({ b, g, dd, sim, score: 100 - dd * 3 + sim * 25 + (dd === 0 ? 5 : 0) });
+      pairs.push({ b, g, dd, sim, score: bf ? 55 + sim * 40 : 100 - dd * 3 + sim * 25 + (dd === 0 ? 5 : 0) });
     }
   }
   pairs.sort((x, y) => y.score - x.score);
@@ -1976,6 +1983,46 @@ async function loadSample() {
   toast('Sample files loaded — a Maybank-style statement and an Autocount-style ledger.');
 }
 
+/* ---------------- carry forward outstanding items ---------------- */
+function extractOutstanding(data) {
+  const out = { bank: [], gl: [] };
+  const matched = new Set();
+  for (const m of (data.matches || [])) { m.bank.forEach(id => matched.add(id)); m.gl.forEach(id => matched.add(id)); }
+  for (const kind of ['bank', 'gl']) {
+    const p = data[kind];
+    if (!p) continue;
+    let items;
+    if (p.grid && p.grid.length) {
+      const tmp = { kind, grid: p.grid, headerRow: p.headerRow, map: p.map, items: [], skipped: 0 };
+      buildItems(tmp);
+      items = tmp.items;
+    } else items = p.items || [];
+    if (data.bf && data.bf[kind]) items = items.concat(data.bf[kind]);   // chains across months
+    out[kind] = items.filter(i => !matched.has(i.id)).map((i, n) => ({
+      id: kind + '-bf-' + n, date: i.date, ref: i.ref || '',
+      amount: i.amount, cents: i.cents, bf: true,
+      desc: /^B\/F · /.test(i.desc || '') ? i.desc : 'B/F · ' + (i.desc || '')
+    }));
+  }
+  return out;
+}
+async function loadCarryForward(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !data.bank || !data.gl) throw new Error('bad file');
+    S.bf = extractOutstanding(data);
+    if (S.bank) buildItems(S.bank);
+    if (S.gl) buildItems(S.gl);
+    refreshUploadUI();
+    $('bfNote').textContent = `↩ Carried forward from ${data.bank.name || 'last session'}: ` +
+      `${S.bf.bank.length} outstanding bank item(s) and ${S.bf.gl.length} outstanding ledger item(s). ` +
+      `They are marked "B/F ·" and can match this month's transactions regardless of the date window.`;
+    toast('Outstanding items carried forward.');
+  } catch (e) {
+    toast('Could not read that file — choose the TickMatch session file you saved last month.');
+  }
+}
+
 /* ---------------- session save & restore ---------------- */
 const LS_KEY = 'tickmatch-session-v1';
 
@@ -1986,7 +2033,7 @@ function serializeSession(includeGrids) {
     items: includeGrids ? null : fs.items
   });
   return { v: 1, savedAt: Date.now(), dateWin: getWindow(),
-           bank: pack(S.bank), gl: pack(S.gl), matches: S.matches };
+           bank: pack(S.bank), gl: pack(S.gl), matches: S.matches, bf: S.bf };
 }
 function saveSession() {
   if (!S.bank || !S.gl || !S.bank.items.length || !S.gl.items.length) return;
@@ -2008,8 +2055,11 @@ function restoreSession(data) {
     else fs.items = p.items || [];
     return fs;
   };
+  S.bf = (data.bf && data.bf.bank) ? data.bf : { bank: [], gl: [] };
   S.bank = unpack(data.bank, 'bank');
   S.gl = unpack(data.gl, 'gl');
+  if (S.bank.grid.length) buildItems(S.bank);   // re-run now that S.bank/S.bf are set, so B/F items join in
+  if (S.gl.grid.length) buildItems(S.gl);
   S.matches = data.matches || [];
   S.sel.bank.clear(); S.sel.gl.clear();
   $('dateWin').value = data.dateWin ?? 7;
@@ -2090,8 +2140,10 @@ function init() {
   $('btnPrint').addEventListener('click', () => { buildPrintReport(); window.print(); });
   $('btnRestart').addEventListener('click', () => {
     S.bank = null; S.gl = null; S.matches = [];
+    S.bf = { bank: [], gl: [] };
     S.sel.bank.clear(); S.sel.gl.clear(); S.filter = '';
     $('tblFilter').value = '';
+    $('bfNote').textContent = '';
     try { localStorage.removeItem(LS_KEY); } catch (e) {}
     $('saveHint').textContent = '';
     refreshUploadUI();
@@ -2103,6 +2155,11 @@ function init() {
     if ($('sessionFile').files.length) loadSessionFile($('sessionFile').files[0]);
     $('sessionFile').value = '';
   });
+  $('btnCarryFwd').addEventListener('click', () => $('bfFile').click());
+  $('bfFile').addEventListener('change', () => {
+    if ($('bfFile').files.length) loadCarryForward($('bfFile').files[0]);
+    $('bfFile').value = '';
+  });
   checkSavedSession();
   document.querySelectorAll('.step.done').forEach(() => {});
   $('step1').addEventListener('click', () => { if ($('step1').classList.contains('done')) goStep(1); });
@@ -2113,5 +2170,6 @@ if (document.readyState !== 'loading') init();
 
 /* test hooks (harmless in production) */
 window.TM = { S, parseCSV, parseXLSX, parsePDFtoGrid, parseDateStr, parseAmountStr,
-  cleanGrid, detectHeaderRow, autoMap, buildItems, autoMatch, loadSample, prepareSheet, ingestFile };
+  cleanGrid, detectHeaderRow, autoMap, buildItems, autoMatch, loadSample, prepareSheet, ingestFile,
+  serializeSession, extractOutstanding, restoreSession };
 </script>
